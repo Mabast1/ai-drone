@@ -1,0 +1,168 @@
+var arDrone = require('ar-drone');
+var path = require('path');
+var express = require('express');
+var fs = require('fs');
+var gm = require('gm');
+var client = arDrone.createClient();
+
+var oxford = require('project-oxford');
+var apikey ="ed14848f43344388b9e40f18517f8c75"; 
+var Oxclient = new oxford.Client(apikey); 
+var idMap = [];
+var people = [];
+var myGroup = "drone_demo_group";
+var found = false;
+var app = express();
+app.use(express.static('public'));
+
+function mapPersonList(groupId) {
+   Oxclient.face.person.list(groupId)
+   .catch(function(e) {
+      console.log(e); // "oh, no!"
+   }).then(function (response){
+      idMap = [];
+      response.forEach(function(person) {
+         idMap[person.personId] = person;
+      });  
+   });
+}
+
+function identifyPATH(testPath,groupId) {
+       Oxclient.face.detect({path:testPath, returnFaceId:true})
+            .then(function (response) {
+                if (response.length == 0) {
+                    console.log("Response Blank");
+                } else {
+                     var faceIds = [];
+                     var faceMap = [];
+                     response.forEach(function(face) {
+                         //console.log("Counting Faces In Image");
+                         faceIds.push(face.faceId);
+                         faceMap[face.faceId] = face;
+                     });
+                     //console.log(faceMap);
+                     client.face.identify(faceIds, groupId)
+                          .then(function(response) {
+                              //console.log("Identifying Faces In Image");
+                              //console.log(response);
+                              response.forEach(function(face) {
+                           if (face.candidates && face.candidates.length > 0) {
+                                    var topCandidate = face.candidates[0];
+               faceMap[face.faceId]['person']  = idMap[topCandidate.personId];
+              faceMap[face.faceId]['confidence']  = topCandidate.confidence;
+                                }
+                           });
+                     
+                           for (var faceId in faceMap) {
+							   people.push(faceMap[faceId]);
+							   var name = (faceMap[faceId].person && faceMap[faceId].person.name) || '<unknown>';
+							   if (name == "Mark Torr") {
+       								client.land();
+       								found = true;       
+       								client.stop();
+       							}
+							   console.log(name + ' @ ' + JSON.stringify(faceMap[faceId].faceRectangle));
+
+							   var topy = faceMap[faceId].faceRectangle.top;
+							   var topx = faceMap[faceId].faceRectangle.left;
+							   var bottomx = faceMap[faceId].faceRectangle.left + faceMap[faceId].faceRectangle.width;
+							   var bottomy = faceMap[faceId].faceRectangle.top + faceMap[faceId].faceRectangle.height;
+							   var textx = topx ;
+							   var texty = topy - 10; 
+							   var TextOut = name;
+							   gm('public/DroneImage.png')
+							       .fill('none')
+							       .stroke("red",4)
+							       .drawRectangle(topx,topy,bottomx,bottomy)
+							       .fontSize("20px")
+							       .stroke("red",2)
+							       .font('/Windows/Fonts/trebuc.ttf')
+							       .drawText(textx,texty,TextOut)
+							       .write('public/DroneImage.png', function (err) {
+							             if( err ) throw err;
+							             console.log(response);  
+							        }
+							    )        
+							 }
+                     });   
+                }
+          })   
+    }
+ 
+
+
+
+app.get('/', function (req, res) {
+  res.sendFile(path.join(__dirname + '/index.html'));
+});
+
+// This router is sending a command to the drone
+// to take off
+app.get('/takeoff', function(req, res) {
+  client.takeoff();
+  console.log("Drone Taking Off");
+});
+
+// This router is sending a command to the drone
+// to land
+app.get('/land', function(req, res) {
+  client.stop(0);
+  client.land();
+  console.log("Drone Landing");
+});
+
+// This router is sending a command to the drone
+// to calibrate. Causes the drone to fully
+// rotate and balance
+app.get('/calibrate', function(req, res) {
+  client.calibrate(0);
+  console.log("Drone Calibrating");
+});
+
+// This router is sending a command to the drone
+// to cancel all existing commands. Important if
+// turning clockwise and you want to stop for
+// example
+app.get('/hover', function(req, res) {
+   client.stop(0);
+   console.log("Hover");
+});
+
+
+
+// function to capture the photos
+app.get('/photos', function(req, res) {
+  console.log("Drone Taking Pictures");
+   var pngStream = client.getPngStream();
+    var period = 5000; // Save a frame every 5000 ms.
+    var lastFrameTime = 0;
+
+    pngStream
+     .on('error', console.log)
+     .on('data', function(pngBuffer) {
+        var now = (new Date()).getTime();
+        if (now - lastFrameTime > period && found == false) {
+           lastFrameTime = now;
+           fs.writeFile(__dirname + '/Public/DroneImage.png', pngBuffer, function(err) {
+             if (err) {
+               console.log("Error saving PNG: " + err);
+             } else {
+               console.log("Saved Frame"); 
+			      mapPersonList(myGroup);
+			      identifyPATH(__dirname + '/public/DroneImage.png',myGroup);
+            }
+        });
+     }
+  }); 
+});
+
+
+// This router is sending a command to the drone
+// to turn clockwise
+app.get('/clockwise', function(req, res) {
+   client.clockwise(0.5);
+   console.log("Drone Turning Clockwise");
+});
+
+app.listen(3000, function () {
+});
